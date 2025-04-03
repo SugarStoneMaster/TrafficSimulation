@@ -2,7 +2,7 @@ import random
 
 from autogen_core import RoutedAgent, message_handler, MessageContext, AgentId
 
-from agents.messages import UpdateCommand
+from src.agents.messages import UpdateCommand
 
 
 class IntelligentAgent(RoutedAgent):

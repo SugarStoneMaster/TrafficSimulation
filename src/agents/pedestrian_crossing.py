@@ -1,7 +1,7 @@
 from autogen_core import RoutedAgent, message_handler, MessageContext
 import random
 
-from agents.messages import UpdateCommand
+from src.agents.messages import UpdateCommand
 
 
 class PedestrianCrossingAgent(RoutedAgent):

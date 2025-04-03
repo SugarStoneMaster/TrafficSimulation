@@ -1,6 +1,6 @@
 from autogen_core import RoutedAgent, MessageContext, message_handler
 
-from agents.messages import UpdateCommand
+from src.agents.messages import UpdateCommand
 
 
 class TrafficLightAgent(RoutedAgent):

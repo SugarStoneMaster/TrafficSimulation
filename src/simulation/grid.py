@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
+
 
 @dataclass
 class RoadCell:
@@ -188,6 +189,36 @@ class RoadGrid:
             print(row_str)
 
 
+def initialize_grid(road_size: str) -> RoadGrid:
+    """Initialize the road grid based on size."""
+    if road_size == "small":
+        grid = RoadGrid(rows=10, cols=15)
+    elif road_size == "medium":
+        grid = RoadGrid(rows=15, cols=20)
+    elif road_size == "large":
+        grid = RoadGrid(rows=20, cols=30)
+    else:
+        grid = RoadGrid(rows=10, cols=15)  # Default to small
+
+    grid.display()
+    return grid
+
+
+def extract_special_positions(grid: RoadGrid) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Extract traffic light and pedestrian crossing positions from the grid."""
+    traffic_light_positions = []
+    crossing_positions = []
+
+    for r in range(grid.rows):
+        for c in range(grid.cols):
+            cell = grid.grid[r][c]
+            if "traffic_light" in cell.features:
+                traffic_light_positions.append((r, c))
+            if "pedestrian_crossing" in cell.features:
+                crossing_positions.append((r, c))
+
+    return traffic_light_positions, crossing_positions
+
 # --- Example Usage ---
 if __name__ == "__main__":
     # Try different sizes to see how it scales
@@ -198,3 +229,4 @@ if __name__ == "__main__":
     print("\n\n=== LARGER GRID (12 x 20) ===")
     grid_large = RoadGrid(rows=12, cols=20)
     grid_large.display()
+

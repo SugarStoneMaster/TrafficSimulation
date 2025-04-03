@@ -3,8 +3,8 @@ from autogen_core import RoutedAgent, message_handler, MessageContext
 import random
 from typing import List, Tuple, Dict, Optional
 
-from agents.messages import UpdateVehicleCommand
-from grid import RoadGrid, RoadCell
+from src.agents.messages import UpdateVehicleCommand
+from src.simulation.grid import RoadGrid, RoadCell
 
 # Configure logging
 logging.basicConfig(filename='vehicle_agent.log', level=logging.DEBUG,

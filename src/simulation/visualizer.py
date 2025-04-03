@@ -1,6 +1,6 @@
 import pygame
 
-from grid import RoadGrid
+from src.simulation.grid import RoadGrid
 
 # PyGame visualization constants
 CELL_SIZE = 30  # Size of each cell in pixels

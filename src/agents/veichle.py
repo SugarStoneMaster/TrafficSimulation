@@ -11,7 +11,7 @@ logging.basicConfig(filename='vehicle_agent.log', level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class VehicleAgent(RoutedAgent):
-    _all_vehicle_positions = {}  # {(row, col): vehicle_id}
+    _all_vehicle_positions = {}  # {(row, col): [vehicle_id1, vehicle_id2, ...]}
 
     def __init__(self, vehicle_id: int, grid: RoadGrid, start_position: Optional[Tuple[int, int]] = None):
         super().__init__(f"VehicleAgent-{vehicle_id}")
@@ -26,6 +26,13 @@ class VehicleAgent(RoutedAgent):
             self.row, self.col = self._find_random_entry_point()
 
         self.direction = self._get_direction_from_cell(self.grid.grid[self.row][self.col])
+
+        # Register this vehicle in the position tracking dictionary
+        if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
+            VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
+        VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
+
+
         logging.debug(f"Initialized VehicleAgent-{self.vehicle_id} at position ({self.row}, {self.col}) with direction {self.direction}")
 
     def _find_random_entry_point(self) -> Tuple[int, int]:
@@ -164,17 +171,17 @@ class VehicleAgent(RoutedAgent):
         for direction, (dr, dc) in direction_offsets.items():
             next_row, next_col = row + dr, col + dc
             if 0 <= next_row < grid.rows and 0 <= next_col < grid.cols:
-                # Skip if the cell is occupied by another vehicle
-                if (next_row, next_col) in VehicleAgent._all_vehicle_positions and \
-                        VehicleAgent._all_vehicle_positions[(next_row, next_col)] != self.id:
-                    logging.debug(f"VehicleAgent-{self.vehicle_id} found cell ({next_row}, {next_col}) occupied")
-                    continue
-
                 next_cell = grid.grid[next_row][next_col]
+
+                # Check if cell is a road and has capacity
                 if next_cell.cell_type == "road":
-                    # Only add directions that are explicitly supported in the next cell
-                    if direction in next_cell.features:
-                        valid_adjacent_cells[direction] = (next_row, next_col, next_cell)
+                    # Check if the cell has room based on lanes
+                    vehicles_in_cell = len(VehicleAgent._all_vehicle_positions.get((next_row, next_col), []))
+                    if vehicles_in_cell < next_cell.lanes or self.id in VehicleAgent._all_vehicle_positions.get(
+                            (next_row, next_col), []):
+                        # Only add directions that are explicitly supported in the next cell
+                        if direction in next_cell.features:
+                            valid_adjacent_cells[direction] = (next_row, next_col, next_cell)
 
         is_intersection = len(valid_adjacent_cells) >= 3
         logging.debug(
@@ -245,9 +252,12 @@ class VehicleAgent(RoutedAgent):
     @message_handler
     async def handle_update(self, message: UpdateVehicleCommand, ctx: MessageContext) -> None:
         # Remove current position from registry before potentially moving
-        if (self.row, self.col) in VehicleAgent._all_vehicle_positions and \
-                VehicleAgent._all_vehicle_positions[(self.row, self.col)] == self.id:
-            del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
+        if (self.row, self.col) in VehicleAgent._all_vehicle_positions:
+            if self.id in VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                VehicleAgent._all_vehicle_positions[(self.row, self.col)].remove(self.id)
+                # Clean up empty lists
+                if not VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                    del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
 
         # Check if current position is an exit point
         if self._is_exit_point(self.row, self.col):
@@ -269,6 +279,8 @@ class VehicleAgent(RoutedAgent):
                 f"VehicleAgent-{self.vehicle_id} waiting at ({self.row}, {self.col}), wait_time={self.wait_time}")
 
         # Register new position in the class tracking variable
-        VehicleAgent._all_vehicle_positions[(self.row, self.col)] = self.id
+        if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
+            VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
+        VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
 
         print(f"{self.id}: position=({self.row},{self.col}), direction={self.direction}, wait_time={self.wait_time}")

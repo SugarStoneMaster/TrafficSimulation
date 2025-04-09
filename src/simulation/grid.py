@@ -8,6 +8,8 @@ class RoadCell:
     lanes: int                    # 0 if not a road
     features: List[str] = field(default_factory=list)
     capacity: int = 0             # For road cells, how many vehicles can line up
+    parking_type: str = None      # "street" or "building" if has parking
+    parking_capacity: int = 0     # How many parking spots
 
     def short_repr(self) -> str:
         """
@@ -166,7 +168,51 @@ class RoadGrid:
         r = self._frac_row(0.75)
         grid[r][right_c].features.append("pedestrian_crossing")
 
+        def add_street_parking(grid):
+            # Identify intersection points
+            intersections = set()
+            for r in [top_r, bottom_r, mid_r]:
+                for c in [left_c, right_c, left_mid_c, right_mid_c]:
+                    intersections.add((r, c))
+
+            # Add street parking to horizontal roads, excluding intersections and special cells
+            for r in [top_r, bottom_r, mid_r]:
+                for c in range(0, self.cols):
+                    cell = grid[r][c]
+                    if (r, c) not in intersections and cell.cell_type == "road" and \
+                            "traffic_light" not in cell.features and "pedestrian_crossing" not in cell.features:
+                        lanes = cell.lanes
+                        capacity = lanes
+                        cell.features.append("parking")
+                        cell.parking_type = "street"
+                        cell.parking_capacity = capacity
+
+            # Add street parking to vertical roads, excluding intersections and special cells
+            for c in [left_c, right_c, left_mid_c, right_mid_c]:
+                for r in range(0, self.rows):
+                    cell = grid[r][c]
+                    if (r, c) not in intersections and cell.cell_type == "road" and \
+                            "traffic_light" not in cell.features and "pedestrian_crossing" not in cell.features:
+                        lanes = cell.lanes
+                        capacity = lanes
+                        cell.features.append("parking")
+                        cell.parking_type = "street"
+                        cell.parking_capacity = capacity
+
+            # Add a parking building near the center
+            building_r = self._frac_row(0.45)
+            building_c = self._frac_col(0.53)
+            grid[building_r][building_c].cell_type = "building"
+            grid[building_r][building_c].features.append("parking")
+            grid[building_r][building_c].parking_type = "building"
+            grid[building_r][building_c].parking_capacity = 10  # Large capacity for the building
+
+
+        add_street_parking(grid)
+
         return grid
+
+
 
     def display(self) -> None:
         """

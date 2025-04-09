@@ -16,7 +16,8 @@ async def main():
     runtime.start()
 
     await run_simulation(runtime, simulation_time=50, road_size="large",
-                         traffic_light_timing=(9, 4), pedestrian_crossing_timing=(1, 3))
+                         traffic_light_timing=(9, 4), pedestrian_crossing_timing=(1, 3),
+                         with_parking=True)
 
     await runtime.stop()
     await runtime.close()

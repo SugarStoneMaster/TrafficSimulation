@@ -3,8 +3,8 @@ import pygame
 from src.simulation.grid import RoadGrid
 
 # PyGame visualization constants
-CELL_SIZE = 30  # Size of each cell in pixels
-PADDING = 10  # Padding inside cells
+CELL_SIZE = 40  # Size of each cell in pixels
+PADDING = 5  # Padding inside cells
 FPS = 5  # Frames per second
 
 # Colors
@@ -15,13 +15,16 @@ RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
 YELLOW = (255, 255, 0)
+PURPLE = (160, 32, 240)
+
 
 
 class PyGameVisualizer:
-    def __init__(self, grid: RoadGrid):
+    def __init__(self, grid: RoadGrid, with_parking: bool = False):
         self.grid = grid
         self.width = grid.cols * CELL_SIZE
         self.height = grid.rows * CELL_SIZE
+        self.with_parking = with_parking  # Track if parking is enabled
 
         # Initialize PyGame
         pygame.init()
@@ -101,21 +104,122 @@ class PyGameVisualizer:
                                                   for x, y in self.arrows[feature]]
                                 pygame.draw.polygon(self.screen, BLACK, arrow_vertices)
 
+                # Draw parking building
+                if cell.cell_type == "building" and "parking" in cell.features and self.with_parking:
+                    # Draw parking building with a distinctive color
+                    pygame.draw.rect(self.screen, (70, 130, 180), rect)  # Steel blue color
 
+                    # Add a "P" label
+                    font = pygame.font.SysFont(None, 36)
+                    text = font.render("P", True, WHITE)
+                    text_rect = text.get_rect(center=(c * CELL_SIZE + CELL_SIZE // 2,
+                                                      r * CELL_SIZE + CELL_SIZE // 2))
+                    self.screen.blit(text, text_rect)
+
+                # Draw parking areas
+                if "parking" in cell.features and self.with_parking:
+                    if getattr(cell, 'parking_type', None) == "street":
+                        lanes = cell.lanes
+                        if "northbound" in cell.features:
+                            # Northbound - draw on right side (east)
+                            pygame.draw.rect(self.screen, BLUE,
+                                             (c * CELL_SIZE + 4 * CELL_SIZE // 5, r * CELL_SIZE,
+                                              CELL_SIZE // 5, CELL_SIZE))
+                            # Draw second parking spot if 2+ lanes
+                            if lanes >= 2:
+                                pygame.draw.rect(self.screen, BLUE,
+                                                 (c * CELL_SIZE, r * CELL_SIZE,
+                                                  CELL_SIZE // 5, CELL_SIZE))
+
+                        elif "southbound" in cell.features:
+                            # Southbound - draw on right side (west)
+                            pygame.draw.rect(self.screen, BLUE,
+                                             (c * CELL_SIZE, r * CELL_SIZE,
+                                              CELL_SIZE // 5, CELL_SIZE))
+                            # Draw second parking spot if 2+ lanes
+                            if lanes >= 2:
+                                pygame.draw.rect(self.screen, BLUE,
+                                                 (c * CELL_SIZE + 4 * CELL_SIZE // 5, r * CELL_SIZE,
+                                                  CELL_SIZE // 5, CELL_SIZE))
+
+                        elif "eastbound" in cell.features:
+                            # Eastbound - draw on right side (south)
+                            pygame.draw.rect(self.screen, BLUE,
+                                             (c * CELL_SIZE, r * CELL_SIZE + 4 * CELL_SIZE // 5,
+                                              CELL_SIZE, CELL_SIZE // 5))
+                            # Draw second parking spot if 2+ lanes
+                            if lanes >= 2:
+                                pygame.draw.rect(self.screen, BLUE,
+                                                 (c * CELL_SIZE, r * CELL_SIZE,
+                                                  CELL_SIZE, CELL_SIZE // 5))
+
+                        elif "westbound" in cell.features:
+                            # Westbound - draw on right side (north)
+                            pygame.draw.rect(self.screen, BLUE,
+                                             (c * CELL_SIZE, r * CELL_SIZE,
+                                              CELL_SIZE, CELL_SIZE // 5))
+                            # Draw second parking spot if 2+ lanes
+                            if lanes >= 2:
+                                pygame.draw.rect(self.screen, BLUE,
+                                                 (c * CELL_SIZE, r * CELL_SIZE + 4 * CELL_SIZE // 5,
+                                                  CELL_SIZE, CELL_SIZE // 5))
 
     def draw_vehicles(self, vehicles):
+        # Group vehicles by position
+        vehicles_by_position = {}
         for vid, row, col, direction in vehicles:
-            vehicle_num = vid[-1]  # Extract number from "vehicle_X"
+            pos = (row, col)
+            if pos not in vehicles_by_position:
+                vehicles_by_position[pos] = []
+            vehicles_by_position[pos].append((vid, direction))
 
-            # Draw vehicle
-            center_x = col * CELL_SIZE + CELL_SIZE // 2
-            center_y = row * CELL_SIZE + CELL_SIZE // 2
-            pygame.draw.circle(self.screen, BLUE, (center_x, center_y), CELL_SIZE // 3)
+        # Draw vehicles with offsets when multiple are in same cell
+        for (row, col), vehicles_here in vehicles_by_position.items():
+            cell = self.grid.grid[row][col]
 
-            # Draw vehicle ID
-            text = self.font.render(f"V{vehicle_num}", True, WHITE)
-            text_rect = text.get_rect(center=(center_x, center_y))
-            self.screen.blit(text, text_rect)
+            # For each vehicle at this position
+            for idx, (vid, direction) in enumerate(vehicles_here):
+                vehicle_num = vid[-1]  # Extract number from "vehicle_X"
+
+                center_x = col * CELL_SIZE + CELL_SIZE // 2
+                center_y = row * CELL_SIZE + CELL_SIZE // 2
+
+                # Apply offset when multiple vehicles in same cell
+                if len(vehicles_here) > 1 and cell.lanes >= 2:
+                    if direction in ["northbound", "southbound"]:
+                        # Horizontal offset for vertical roads
+                        if idx == 0:
+                            center_x -= CELL_SIZE // 4
+                        else:
+                            center_x += CELL_SIZE // 4
+                    else:
+                        # Vertical offset for horizontal roads
+                        if idx == 0:
+                            center_y -= CELL_SIZE // 4
+                        else:
+                            center_y += CELL_SIZE // 4
+
+                # Set rectangle size based on direction
+                if direction in ["northbound", "southbound"]:
+                    # Taller rectangle for vertical movement
+                    width, height = CELL_SIZE // 5, CELL_SIZE // 3
+                else:
+                    # Wider rectangle for horizontal movement
+                    width, height = CELL_SIZE // 3, CELL_SIZE // 5
+
+                # Calculate rectangle position (centered)
+                rect_x = center_x - width // 2
+                rect_y = center_y - height // 2
+
+                # Draw vehicle as rectangle
+                vehicle_rect = pygame.Rect(rect_x, rect_y, width, height)
+                pygame.draw.rect(self.screen, PURPLE, vehicle_rect)
+
+                # Draw vehicle ID
+                text = self.font.render(f"V{vehicle_num}", True, WHITE)
+                text_rect = text.get_rect(center=(center_x, center_y))
+                self.screen.blit(text, text_rect)
+
 
     def draw_traffic_lights(self, traffic_light_states):
         """

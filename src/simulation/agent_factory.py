@@ -4,6 +4,7 @@ from autogen_core import (
     SingleThreadedAgentRuntime,
 )
 
+from src.agents.parking import ParkingAgent
 from src.agents.pedestrian_crossing import PedestrianCrossingAgent
 from src.agents.traffic_light import TrafficLightAgent
 from src.agents.veichle import VehicleAgent
@@ -55,3 +56,34 @@ async def create_new_vehicle(runtime: SingleThreadedAgentRuntime, grid: RoadGrid
     vehicle_ids.append(vehicle_key)
     vehicle_pending.append(vehicle_key)
     vehicle_wait_times[vehicle_key] = 0
+
+
+# Add to src/simulation/agent_factory.py
+async def register_parking_agents(runtime: SingleThreadedAgentRuntime, grid: RoadGrid,
+                                  avg_parking_time: int, initial_occupancy: float = 0.3) -> List[str]:
+    """Register parking agents for all parking spots in the grid."""
+    parking_agents = []
+    parking_id = 1
+
+    for r in range(grid.rows):
+        for c in range(grid.cols):
+            cell = grid.grid[r][c]
+            if "parking" in cell.features:
+                agent_id = f"parking_{parking_id}"
+                capacity = getattr(cell, 'parking_capacity', 1)
+                parking_type = getattr(cell, 'parking_type', "street")
+
+                # Calculate initial vehicles (randomized but proportional to capacity)
+                initial_vehicles = min(capacity, int(capacity * initial_occupancy))
+
+                await ParkingAgent.register(
+                    runtime,
+                    agent_id,
+                    lambda pid=parking_id, ptype=parking_type, pcap=capacity,
+                           pos=(r, c), init=initial_vehicles:
+                    ParkingAgent(pid, ptype, pcap, avg_parking_time, pos, init)
+                )
+                parking_agents.append(agent_id)
+                parking_id += 1
+
+    return parking_agents

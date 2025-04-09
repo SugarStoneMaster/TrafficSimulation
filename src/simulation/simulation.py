@@ -10,18 +10,19 @@ from autogen_core import (
 
 from src.agents.intelligent import IntelligentAgent
 from src.agents.messages import UpdateVehicleCommand, UpdateCommand
-from src.simulation.agent_factory import register_traffic_lights, register_pedestrian_crossings, create_new_vehicle
+from src.simulation.agent_factory import register_traffic_lights, register_pedestrian_crossings, create_new_vehicle, register_parking_agents
 from src.simulation.grid import extract_special_positions, initialize_grid
 from src.simulation.metrics import display_metrics
 from src.simulation.visualizer import PyGameVisualizer
 
 
-async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10, road_size="small",
-                         traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3)) -> None:
-    """Run the traffic simulation with the given parameters."""
+async def run_simulation_without_parking(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10,
+                                         road_size="small",
+                                         traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3)) -> None:
+    """Run the traffic simulation without parking functionality."""
     # Initialize components
     grid = initialize_grid(road_size)
-    visualizer = PyGameVisualizer(grid)
+    visualizer = PyGameVisualizer(grid, with_parking=False)
     traffic_light_positions, crossing_positions = extract_special_positions(grid)
 
     # Register agents
@@ -90,6 +91,108 @@ async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: i
     display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times)
     pygame.quit()
     print("Simulation complete.")
+
+
+async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10, road_size="small",
+                                      traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3),
+                                      avg_parking_time: int = 5, parking_initial_occupancy: float = 0.3) -> None:
+    """Run the traffic simulation with parking functionality."""
+    # Initialize components
+    grid = initialize_grid(road_size)
+    visualizer = PyGameVisualizer(grid, with_parking=True)
+    traffic_light_positions, crossing_positions = extract_special_positions(grid)
+
+    # Register agents
+    traffic_light_agents = await register_traffic_lights(runtime, traffic_light_positions, traffic_light_timing)
+    crossing_agents = await register_pedestrian_crossings(runtime, grid, crossing_positions, pedestrian_crossing_timing)
+    parking_agents = await register_parking_agents(runtime, grid, avg_parking_time, parking_initial_occupancy)
+    await IntelligentAgent.register(runtime, "intelligent_agent", lambda: IntelligentAgent())
+
+    # Metrics tracking
+    total_vehicles = 0
+    exited_vehicles = 0
+    vehicle_wait_times = {}
+    vehicles = {}
+    vehicle_ids = []
+    vehicle_pending = []
+    vehicles_exiting = {}
+
+    # Simulation loop
+    for t in range(simulation_time):
+        # Check for PyGame quit event
+        if not visualizer.check_events():
+            break
+
+        # Process vehicles that were marked for removal in the previous step
+        vehicles_to_remove = [vid for vid, removal_time in list(vehicles_exiting.items()) if t >= removal_time]
+        for vid in vehicles_to_remove:
+            if vid in vehicle_ids:
+                vehicle_ids.remove(vid)
+            if vid in vehicles:
+                del vehicles[vid]
+            vehicles_exiting.pop(vid)
+            print(f"Vehicle {vid} has been removed from the simulation")
+
+        # Create a new vehicle every step
+        if t > 0:
+            total_vehicles += 1
+            await create_new_vehicle(runtime, grid, t, vehicle_ids, vehicle_pending, vehicle_wait_times)
+
+        # Update traffic lights and pedestrian crossings
+        traffic_light_states = await update_traffic_lights(runtime, traffic_light_agents)
+        crossing_states = await update_pedestrian_crossings(runtime, crossing_agents)
+        parking_status = await update_parking_agents(runtime, parking_agents, t)
+
+        # Update vehicles
+        for vid in vehicle_ids:
+            exiting, exit_time = await process_vehicle_update(
+                runtime, vid, traffic_light_states, crossing_states,
+                vehicles, vehicle_wait_times, vehicle_pending, t
+            )
+
+            if exiting and vid not in vehicles_exiting:
+                vehicles_exiting[vid] = exit_time
+                exited_vehicles += 1
+                print(f"Vehicle {vid} has reached exit point, will be removed at step {t + 1}")
+
+        # Format vehicle positions for display
+        vehicle_display = [
+            (vid, row, col, direction)
+            for vid, (row, col, direction) in vehicles.items()
+            if vid not in vehicle_pending
+        ]
+
+        # Update visualization
+        visualizer.update(vehicle_display, traffic_light_states, crossing_states)
+        await asyncio.sleep(0.1)
+
+    # Show final metrics
+    display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times)
+    pygame.quit()
+    print("Simulation complete.")
+
+
+async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10, road_size="small",
+                         traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3),
+                         with_parking: bool = False, avg_parking_time: int = 5,
+                         parking_initial_occupancy: float = 0.3) -> None:
+    """
+    Dispatcher function to run the appropriate simulation based on parameters.
+
+    Args:
+        with_parking: If True, runs simulation with parking functionality
+    """
+    if with_parking:
+        await run_simulation_with_parking(
+            runtime, simulation_time, road_size,
+            traffic_light_timing, pedestrian_crossing_timing,
+            avg_parking_time, parking_initial_occupancy
+        )
+    else:
+        await run_simulation_without_parking(
+            runtime, simulation_time, road_size,
+            traffic_light_timing, pedestrian_crossing_timing
+        )
 
 
 async def process_vehicle_update(runtime: SingleThreadedAgentRuntime, vid: str,
@@ -191,3 +294,12 @@ async def update_pedestrian_crossings(runtime: SingleThreadedAgentRuntime,
         if active:
             crossing_states[agent_id] = active == "True"
     return crossing_states
+
+
+# Add this function to src/simulation/simulation.py
+async def update_parking_agents(runtime: SingleThreadedAgentRuntime,
+                               parking_agents: List[str],
+                               current_time: int) -> None:
+    """Update all parking agents with the current time."""
+    for agent_id in parking_agents:
+        await update_agent_state(runtime, agent_id, UpdateCommand(current_time=current_time), "None")

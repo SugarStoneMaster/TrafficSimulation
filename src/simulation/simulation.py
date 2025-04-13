@@ -8,7 +8,6 @@ from autogen_core import (
     SingleThreadedAgentRuntime,
 )
 
-from src.agents.intelligent import IntelligentAgent
 from src.agents.messages import UpdateVehicleCommand, UpdateCommand
 from src.agents.veichle import VehicleAgent
 from src.simulation.agent_factory import register_traffic_lights, register_pedestrian_crossings, create_new_vehicle, register_parking_agents
@@ -29,7 +28,6 @@ async def run_simulation_without_parking(runtime: SingleThreadedAgentRuntime, si
     # Register agents
     traffic_light_agents = await register_traffic_lights(runtime, traffic_light_positions, traffic_light_timing)
     crossing_agents = await register_pedestrian_crossings(runtime, grid, crossing_positions, pedestrian_crossing_timing)
-    await IntelligentAgent.register(runtime, "intelligent_agent", lambda: IntelligentAgent())
 
     # Metrics tracking
     total_vehicles = 0
@@ -49,6 +47,17 @@ async def run_simulation_without_parking(runtime: SingleThreadedAgentRuntime, si
         # Process vehicles that were marked for removal in the previous step
         vehicles_to_remove = [vid for vid, removal_time in list(vehicles_exiting.items()) if t >= removal_time]
         for vid in vehicles_to_remove:
+            # Find and clean up vehicle's position from tracking dictionary
+            if vid in vehicles:
+                row, col = vehicles[vid][0], vehicles[vid][1]
+                if (row, col) in VehicleAgent._all_vehicle_positions and vid in VehicleAgent._all_vehicle_positions[
+                    (row, col)]:
+                    VehicleAgent._all_vehicle_positions[(row, col)].remove(vid)
+                    # Clean up empty position entries
+                    if not VehicleAgent._all_vehicle_positions[(row, col)]:
+                        del VehicleAgent._all_vehicle_positions[(row, col)]
+
+            # Remove vehicle from other tracking structures
             if vid in vehicle_ids:
                 vehicle_ids.remove(vid)
             if vid in vehicles:
@@ -90,14 +99,14 @@ async def run_simulation_without_parking(runtime: SingleThreadedAgentRuntime, si
         await asyncio.sleep(0.1)
 
     # Show final metrics
-    display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times)
+    display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times, with_parking=False)
     pygame.quit()
     print("Simulation complete.")
 
 
 async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10, road_size="small",
                                       traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3),
-                                      avg_parking_time: int = 5, parking_initial_occupancy: float = 0.3, parking_delay_steps: int = 1) -> None:
+                                      avg_parking_time: int = 5,  parking_delay_steps: int = 1) -> None:
     """Run the traffic simulation with parking functionality."""
     # Initialize components
     grid = initialize_grid(road_size)
@@ -110,7 +119,7 @@ async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simul
     # Register agents
     traffic_light_agents = await register_traffic_lights(runtime, traffic_light_positions, traffic_light_timing)
     crossing_agents = await register_pedestrian_crossings(runtime, grid, crossing_positions, pedestrian_crossing_timing)
-    parking_agents = await register_parking_agents(runtime, grid, avg_parking_time, parking_initial_occupancy)
+    parking_agents = await register_parking_agents(runtime, grid, avg_parking_time)
 
     # Metrics tracking
     total_vehicles = 0
@@ -130,6 +139,17 @@ async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simul
         # Process vehicles that were marked for removal in the previous step
         vehicles_to_remove = [vid for vid, removal_time in list(vehicles_exiting.items()) if t >= removal_time]
         for vid in vehicles_to_remove:
+            # Find and clean up vehicle's position from tracking dictionary
+            if vid in vehicles:
+                row, col = vehicles[vid][0], vehicles[vid][1]
+                if (row, col) in VehicleAgent._all_vehicle_positions and vid in VehicleAgent._all_vehicle_positions[
+                    (row, col)]:
+                    VehicleAgent._all_vehicle_positions[(row, col)].remove(vid)
+                    # Clean up empty position entries
+                    if not VehicleAgent._all_vehicle_positions[(row, col)]:
+                        del VehicleAgent._all_vehicle_positions[(row, col)]
+
+            # Remove vehicle from other tracking structures
             if vid in vehicle_ids:
                 vehicle_ids.remove(vid)
             if vid in vehicles:
@@ -184,7 +204,7 @@ async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simul
         await asyncio.sleep(0.1)
 
     # Show final metrics
-    display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times)
+    display_metrics(total_vehicles, exited_vehicles, vehicle_wait_times, with_parking=True)
     pygame.quit()
     print("Simulation complete.")
 
@@ -192,7 +212,6 @@ async def run_simulation_with_parking(runtime: SingleThreadedAgentRuntime, simul
 async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: int = 10, road_size="small",
                          traffic_light_timing=(5, 4), pedestrian_crossing_timing=(1, 3),
                          with_parking: bool = False, avg_parking_time: int = 5,
-                         parking_initial_occupancy: float = 0.3,
                          parking_delay_steps: int = 1) -> None:
     """
     Dispatcher function to run the appropriate simulation based on parameters.
@@ -201,11 +220,8 @@ async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: i
         with_parking: If True, runs simulation with parking functionality
     """
     if with_parking:
-        await run_simulation_with_parking(
-            runtime, simulation_time, road_size,
-            traffic_light_timing, pedestrian_crossing_timing,
-            avg_parking_time, parking_initial_occupancy, parking_delay_steps
-        )
+        await run_simulation_with_parking(runtime, simulation_time, road_size, traffic_light_timing,
+                                          pedestrian_crossing_timing, avg_parking_time, parking_delay_steps)
     else:
         await run_simulation_without_parking(
             runtime, simulation_time, road_size,
@@ -213,7 +229,6 @@ async def run_simulation(runtime: SingleThreadedAgentRuntime, simulation_time: i
         )
 
 
-# In src/simulation/simulation.py
 async def process_vehicle_update(runtime: SingleThreadedAgentRuntime, vid: str,
                                  traffic_light_states: Dict[str, str],
                                  crossing_states: Dict[str, bool],
@@ -327,7 +342,6 @@ async def update_pedestrian_crossings(runtime: SingleThreadedAgentRuntime,
     return crossing_states
 
 
-# Add this function to src/simulation/simulation.py
 async def update_parking_agents(runtime: SingleThreadedAgentRuntime,
                                parking_agents: List[str],
                                current_time: int) -> None:

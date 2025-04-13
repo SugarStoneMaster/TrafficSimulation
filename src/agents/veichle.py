@@ -17,7 +17,7 @@ class VehicleAgent(RoutedAgent):
     PARKING_DELAY_STEPS = 1    # Default value, will be updated by simulation
 
 
-    def __init__(self, vehicle_id: int, grid: RoadGrid, parking_probability: float = 0.1, parking_duration: int = 15, start_position: Optional[Tuple[int, int]] = None):
+    def __init__(self, vehicle_id: int, grid: RoadGrid, parking_probability: float = 0.05, parking_duration: int = 5, start_position: Optional[Tuple[int, int]] = None):
         super().__init__(f"VehicleAgent-{vehicle_id}")
         self.vehicle_id = vehicle_id
         self.grid = grid
@@ -181,43 +181,114 @@ class VehicleAgent(RoutedAgent):
             "westbound": (0, -1)
         }
 
-        # First check all adjacent road cells
+        # Opposite directions (to prevent U-turns)
+        opposite_directions = {
+            "northbound": "southbound",
+            "southbound": "northbound",
+            "eastbound": "westbound",
+            "westbound": "eastbound"
+        }
+
+        # Current cell's allowed directions
+        current_allowed_directions = [d for d in current_cell.features
+                                      if d in direction_offsets.keys()]
+
+        logging.debug(
+            f"VehicleAgent-{self.vehicle_id} at ({row}, {col}) - Current cell allows: {current_allowed_directions}")
+
+        # Check all adjacent cells
         valid_adjacent_cells = {}
         for direction, (dr, dc) in direction_offsets.items():
             next_row, next_col = row + dr, col + dc
+
+            # Skip U-turns unless it's the only option
+            if direction == opposite_directions.get(self.direction):
+                logging.debug(f"VehicleAgent-{self.vehicle_id}: Skipping {direction} as it would be a U-turn")
+                continue
+
             if 0 <= next_row < grid.rows and 0 <= next_col < grid.cols:
                 next_cell = grid.grid[next_row][next_col]
 
-                # Check if cell is a road and has capacity
-                if next_cell.cell_type == "road":
-                    # Check if the cell has room based on lanes
-                    vehicles_in_cell = len(VehicleAgent._all_vehicle_positions.get((next_row, next_col), []))
-                    if vehicles_in_cell < next_cell.lanes or self.id in VehicleAgent._all_vehicle_positions.get(
-                            (next_row, next_col), []):
-                        # Only add directions that are explicitly supported in the next cell
-                        if direction in next_cell.features:
-                            valid_adjacent_cells[direction] = (next_row, next_col, next_cell)
+                logging.debug(f"VehicleAgent-{self.vehicle_id}: Checking {direction} -> ({next_row}, {next_col})")
+                logging.debug(f"  Cell type: {next_cell.cell_type}, Features: {next_cell.features}")
 
-        is_intersection = len(valid_adjacent_cells) >= 3
+                if next_cell.cell_type == "road":
+                    vehicles_in_cell = len(VehicleAgent._all_vehicle_positions.get((next_row, next_col), []))
+                    logging.debug(f"  Vehicles in cell: {vehicles_in_cell}, Cell lanes: {next_cell.lanes}")
+
+                    # Check capacity
+                    has_capacity = (vehicles_in_cell < next_cell.lanes or
+                                    self.id in VehicleAgent._all_vehicle_positions.get((next_row, next_col), []))
+
+                    # Check direction compatibility
+                    direction_valid = False
+
+                    # At intersection, be more permissive with direction choices
+                    is_intersection = len([d for d in current_cell.features
+                                           if d in direction_offsets.keys()]) >= 2
+
+                    # Direction is valid if it matches next cell's allowed directions
+                    if any(d == direction for d in next_cell.features if d in direction_offsets.keys()):
+                        direction_valid = True
+                        logging.debug(f"  Direction {direction} is explicitly supported by next cell")
+
+                    # OR if we're following our current direction
+                    elif direction == self.direction:
+                        direction_valid = True
+                        logging.debug(f"  Direction {direction} matches current vehicle direction")
+
+                    # OR if we're at an intersection and the direction is reasonable
+                    elif is_intersection:
+                        direction_valid = True
+                        logging.debug(f"  At intersection - direction {direction} is considered valid")
+
+                    if has_capacity and direction_valid:
+                        valid_adjacent_cells[direction] = (next_row, next_col, next_cell)
+                        logging.debug(f"  Valid direction: {direction} -> ({next_row}, {next_col})")
+                    else:
+                        reasons = []
+                        if not has_capacity:
+                            reasons.append("no capacity")
+                        if not direction_valid:
+                            reasons.append("invalid direction")
+                        logging.debug(f"  Invalid move to ({next_row}, {next_col}): {', '.join(reasons)}")
+                else:
+                    logging.debug(f"  Cell at ({next_row}, {next_col}) is not a road")
+
+        is_intersection = len(valid_adjacent_cells) >= 2
         logging.debug(
             f"VehicleAgent-{self.vehicle_id} at ({row}, {col}) is at intersection: {is_intersection} with {len(valid_adjacent_cells)} valid cells")
 
-        # Always prioritize continuing in the current direction if possible
+        # Prioritize continuing in current direction
         if self.direction in valid_adjacent_cells:
             next_row, next_col, next_cell = valid_adjacent_cells[self.direction]
             directions[self.direction] = (next_row, next_col)
-            logging.debug(f"VehicleAgent-{self.vehicle_id} can continue in current direction {self.direction}")
+            logging.debug(f"VehicleAgent-{self.vehicle_id} continuing in direction {self.direction}")
 
         # Add other valid directions
         for direction, (next_row, next_col, next_cell) in valid_adjacent_cells.items():
-            if direction in directions:
-                continue
-            directions[direction] = (next_row, next_col)
+            if direction not in directions:
+                directions[direction] = (next_row, next_col)
+                logging.debug(f"VehicleAgent-{self.vehicle_id} added alternative direction {direction}")
 
-        # Fallback if no directions found
+        # Emergency fallback for intersections with no valid directions
         if not directions and current_cell.cell_type == "road":
             logging.warning(
-                f"VehicleAgent-{self.vehicle_id} at ({row}, {col}) found no valid directions despite being on a road")
+                f"VehicleAgent-{self.vehicle_id} at ({row}, {col}) found no valid directions - using fallback")
+
+            # Consider any adjacent road cell as last resort
+            for direction, (dr, dc) in direction_offsets.items():
+                if direction != opposite_directions.get(self.direction):  # Still avoid U-turns
+                    next_row, next_col = row + dr, col + dc
+                    if 0 <= next_row < grid.rows and 0 <= next_col < grid.cols:
+                        next_cell = grid.grid[next_row][next_col]
+                        if next_cell.cell_type == "road":
+                            vehicles_in_cell = len(VehicleAgent._all_vehicle_positions.get((next_row, next_col), []))
+                            if vehicles_in_cell < next_cell.lanes:
+                                directions[direction] = (next_row, next_col)
+                                logging.debug(f"VehicleAgent-{self.vehicle_id} using fallback direction {direction}")
+                                self.direction = direction  # Update vehicle direction to match movement
+                                break
 
         return directions
 
@@ -346,57 +417,125 @@ class VehicleAgent(RoutedAgent):
                 can_move = False
                 self.wait_time += 1
 
+
+
         # Check traffic lights
         if can_move:
             # Get all traffic light positions in the grid
             traffic_light_positions = self._get_traffic_light_positions()
-            # Check if we're at a traffic light position
+
+            # Get the next position in the current direction
+            direction_offsets = {
+                "northbound": (-1, 0),
+                "southbound": (1, 0),
+                "eastbound": (0, 1),
+                "westbound": (0, -1)
+            }
+            dr, dc = direction_offsets.get(self.direction, (0, 0))
+            next_row, next_col = self.row + dr, self.col + dc
+
+            # Check if CURRENT position is at a traffic light
             if (self.row, self.col) in traffic_light_positions:
-                # Get the traffic light ID
-                light_id = f"traffic_light_{traffic_light_positions.index((self.row, self.col)) + 1}"
-                # Check if we're allowed to move (green light)
-                if light_id in traffic_light_states and traffic_light_states[light_id] != "green":
+                # Find the index of this position in traffic light positions
+                position_index = traffic_light_positions.index((self.row, self.col))
+
+                # Form the traffic light ID using the position index
+                traffic_light_id = f"traffic_light_{position_index + 1}"
+
+                # Get the state of this traffic light
+                traffic_light_state = traffic_light_states.get(traffic_light_id, "red")  # Default to red if unknown
+
+                # Stop the vehicle if the light is red
+                if traffic_light_state == "red":
                     can_move = False
-                    self.wait_time += 1
+                    print(f"{self.id}: Stopped at red traffic light at position ({self.row}, {self.col})")
+
+            # ALSO check if the NEXT position has a traffic light
+            elif (next_row, next_col) in traffic_light_positions:
+                # Check if next position is within grid bounds
+                if 0 <= next_row < self.grid.rows and 0 <= next_col < self.grid.cols:
+                    # Find the index of next position in traffic light positions
+                    position_index = traffic_light_positions.index((next_row, next_col))
+
+                    # Form the traffic light ID using the position index
+                    traffic_light_id = f"traffic_light_{position_index + 1}"
+
+                    # Get the state of this traffic light
+                    traffic_light_state = traffic_light_states.get(traffic_light_id, "red")  # Default to red if unknown
+
+                    # Stop the vehicle if the next traffic light is red
+                    if traffic_light_state == "red":
+                        can_move = False
+                        print(f"{self.id}: Stopping before red traffic light at position ({next_row}, {next_col})")
 
         # Check pedestrian crossings
         if can_move:
-            # Get all pedestrian crossing positions
+            # Get all pedestrian crossing positions in the grid
             crossing_positions = self._get_pedestrian_crossing_positions()
-            # Check if we're at a pedestrian crossing
-            if (self.row, self.col) in crossing_positions:
-                # Get the crossing ID
-                crossing_id = f"crossing_{crossing_positions.index((self.row, self.col)) + 1}"
-                # Check if we're allowed to move (inactive crossing)
-                if crossing_id in crossing_states and crossing_states[crossing_id]:
+
+            # Get the next position in the current direction
+            direction_offsets = {
+                "northbound": (-1, 0),
+                "southbound": (1, 0),
+                "eastbound": (0, 1),
+                "westbound": (0, -1)
+            }
+            dr, dc = direction_offsets.get(self.direction, (0, 0))
+            next_row, next_col = self.row + dr, self.col + dc
+
+            # Check if the NEXT position is a pedestrian crossing
+            if (next_row, next_col) in crossing_positions:
+                # Find the index of this position in the crossing positions
+                position_index = crossing_positions.index((next_row, next_col))
+
+                # Form the crossing ID using the position index
+                crossing_id = f"crossing_{position_index + 1}"
+
+                # Get the state of this crossing
+                crossing_active = crossing_states.get(crossing_id, False)  # Default to inactive if unknown
+
+                # Stop the vehicle if the crossing ahead is active
+                if crossing_active:
                     can_move = False
-                    self.wait_time += 1
+                    print(f"{self.id}: Stopped at active pedestrian crossing ahead at position ({next_row}, {next_col})")
 
         # Move if possible
-        if can_move and not getattr(self, 'exiting_delay', False) and self._can_move_forward(traffic_light_states,
-                                                                                             crossing_states):
-            # Remove current position from registry before potentially moving
+        if can_move and not getattr(self, 'exiting_delay', False):
+            # First, remove current position from registry
             if (self.row, self.col) in VehicleAgent._all_vehicle_positions:
                 if self.id in VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
                     VehicleAgent._all_vehicle_positions[(self.row, self.col)].remove(self.id)
-                    # Clean up empty lists
                     if not VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
                         del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
 
-            # Get next position
+            # Check if can move forward in current direction
+            forward_blocked = not self._can_move_forward(traffic_light_states, crossing_states)
+
+            # Get next position (this may change direction if needed)
             old_row, old_col = self.row, self.col
             new_row, new_col = self._get_next_position()
-            self.row, self.col = new_row, new_col
 
-            # Register new position
-            if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
-                VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
-            VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
+            # Only actually move if new position is different
+            if (new_row, new_col) != (old_row, old_col):
+                self.row, self.col = new_row, new_col
 
-            # Check if we've reached an exit point
+                # Register new position
+                if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
+                    VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
+                VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
+
+            # Check for exiting
             exiting = self._is_exit_point(self.row, self.col)
+            if exiting and can_move:
+                # Immediately remove position from _all_vehicle_positions when reaching an exit
+                if (self.row, self.col) in VehicleAgent._all_vehicle_positions and self.id in \
+                        VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                    VehicleAgent._all_vehicle_positions[(self.row, self.col)].remove(self.id)
+                    if not VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                        del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
         else:
             # Not moving this step
+            self.wait_time += 1
             exiting = False
 
         # Print status

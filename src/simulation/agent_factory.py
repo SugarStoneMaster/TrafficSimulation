@@ -60,7 +60,7 @@ async def create_new_vehicle(runtime: SingleThreadedAgentRuntime, grid: RoadGrid
 
 # Add to src/simulation/agent_factory.py
 async def register_parking_agents(runtime: SingleThreadedAgentRuntime, grid: RoadGrid,
-                                  avg_parking_time: int, initial_occupancy: float = 0.3) -> List[str]:
+                                  avg_parking_time: int) -> List[str]:
     """Register parking agents for all parking spots in the grid."""
     parking_agents = []
     parking_id = 1
@@ -74,7 +74,7 @@ async def register_parking_agents(runtime: SingleThreadedAgentRuntime, grid: Roa
                 parking_type = getattr(cell, 'parking_type', "street")
 
                 # Calculate initial vehicles (randomized but proportional to capacity)
-                initial_vehicles = min(capacity, int(capacity * initial_occupancy))
+                initial_vehicles = capacity
 
                 await ParkingAgent.register(
                     runtime,

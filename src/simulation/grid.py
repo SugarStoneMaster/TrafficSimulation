@@ -4,12 +4,12 @@ from typing import List, Tuple
 
 @dataclass
 class RoadCell:
-    cell_type: str                # e.g., "road", "building", "empty"
-    lanes: int                    # 0 if not a road
+    cell_type: str
+    lanes: int
     features: List[str] = field(default_factory=list)
-    capacity: int = 0             # For road cells, how many vehicles can line up
-    parking_type: str = None      # "street" or "building" if has parking
-    parking_capacity: int = 0     # How many parking spots
+    capacity: int = 0
+    parking_type: str = None
+    parking_capacity: int = 0
 
     def short_repr(self) -> str:
         """

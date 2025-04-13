@@ -1,9 +1,9 @@
 import logging
-from autogen_core import RoutedAgent, message_handler, MessageContext
+from autogen_core import RoutedAgent, message_handler, MessageContext, AgentId
 import random
 from typing import List, Tuple, Dict, Optional
 
-from src.agents.messages import UpdateVehicleCommand
+from src.agents.messages import UpdateVehicleCommand, ParkingResponseCommand, ParkingRequestCommand
 from src.simulation.grid import RoadGrid, RoadCell
 
 # Configure logging
@@ -11,14 +11,25 @@ logging.basicConfig(filename='vehicle_agent.log', level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class VehicleAgent(RoutedAgent):
-    _all_vehicle_positions = {}  # {(row, col): [vehicle_id1, vehicle_id2, ...]}
+    _all_vehicle_positions = {}
+    _parking_positions_to_agent_ids = {}
+    _parking_delay_cells = {}  # Track cells with parking delays
+    PARKING_DELAY_STEPS = 1    # Default value, will be updated by simulation
 
-    def __init__(self, vehicle_id: int, grid: RoadGrid, start_position: Optional[Tuple[int, int]] = None):
+
+    def __init__(self, vehicle_id: int, grid: RoadGrid, parking_probability: float = 0.1, parking_duration: int = 15, start_position: Optional[Tuple[int, int]] = None):
         super().__init__(f"VehicleAgent-{vehicle_id}")
         self.vehicle_id = vehicle_id
         self.grid = grid
         self.wait_time = 0
         self.current_lane = 0
+        self.parking_probability = parking_probability
+        self.parking_duration = parking_duration
+        self.is_parked = False
+        self.parking_timer = 0
+        self.parking_agent_id: Optional[str] = None
+        self.exiting_parking_timer = 0  # Track time spent exiting a parking spot
+
 
         if start_position:
             self.row, self.col = start_position
@@ -105,6 +116,10 @@ class VehicleAgent(RoutedAgent):
         # Check if next position is within grid bounds
         if 0 <= next_row < self.grid.rows and 0 <= next_col < self.grid.cols:
             next_cell = self.grid.grid[next_row][next_col]
+
+            # Check for parking delay - block movement if there's a parking maneuver
+            if (next_row, next_col) in VehicleAgent._parking_delay_cells:
+                return False
 
             # Check for red traffic light
             if "traffic_light" in next_cell.features:
@@ -249,38 +264,141 @@ class VehicleAgent(RoutedAgent):
                     positions.append((r, c))
         return positions
 
+    def _should_attempt_parking(self) -> bool:
+        """Determine whether the vehicle should attempt to park."""
+        return random.random() < self.parking_probability and not self.is_parked
+
+    @message_handler
+    async def handle_parking_response(self, message: ParkingResponseCommand, ctx: MessageContext) -> None:
+        """Handle the response from a parking agent."""
+        if message.accepted:
+            self.is_parked = True
+            self.parking_timer = self.parking_duration
+            self.parking_agent_id = ctx.sender
+
+            # Remove this position from parking delay cells if it's there
+            if (self.row, self.col) in VehicleAgent._parking_delay_cells:
+                del VehicleAgent._parking_delay_cells[(self.row, self.col)]
+
+            print(f"{self.id}: Parked successfully at {self.row}, {self.col} for {self.parking_duration} steps")
+        else:
+            print(f"{self.id}: Parking request rejected.")
+
     @message_handler
     async def handle_update(self, message: UpdateVehicleCommand, ctx: MessageContext) -> None:
-        # Remove current position from registry before potentially moving
-        if (self.row, self.col) in VehicleAgent._all_vehicle_positions:
-            if self.id in VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
-                VehicleAgent._all_vehicle_positions[(self.row, self.col)].remove(self.id)
-                # Clean up empty lists
-                if not VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
-                    del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
+        """Process updates for vehicle movement and parking behavior."""
+        # Check if vehicle is currently parked
+        if self.is_parked:
+            self.parking_timer -= 1
+            if self.parking_timer <= 0:
+                # When parking time is over, start the exiting process
+                self.is_parked = False
+                self.parking_agent_id = None
 
-        # Check if current position is an exit point
-        if self._is_exit_point(self.row, self.col):
-            print(f"{self.id}: exiting=True, position=({self.row},{self.col}), direction={self.direction}")
+                # Set exit delay for this cell and for the vehicle itself
+                VehicleAgent._parking_delay_cells[(self.row, self.col)] = VehicleAgent.PARKING_DELAY_STEPS
+                self.exiting_delay = True
+                print(f"{self.id}: Starting to exit parking at ({self.row}, {self.col})")
+
+                # Re-register position since we're staying here during the exit delay
+                if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
+                    VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
+                VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
+
+            # While parked, just print status and don't move
+            print(
+                f"{self.id}: position=({self.row},{self.col}), wait_time={self.wait_time}, direction={self.direction}, is_parked={self.is_parked}, exiting_delay={getattr(self, 'exiting_delay', False)}")
             return
 
-        can_move = self._can_move_forward(message.traffic_light_states, message.crossing_states)
+        # If we have an exiting delay active, count it down
+        if getattr(self, 'exiting_delay', False):
+            if not hasattr(self, 'exiting_delay_counter'):
+                self.exiting_delay_counter = VehicleAgent.PARKING_DELAY_STEPS
+
+            self.exiting_delay_counter -= 1
+            if self.exiting_delay_counter <= 0:
+                self.exiting_delay = False
+                delattr(self, 'exiting_delay_counter')
+                print(f"{self.id}: Finished exit delay at ({self.row}, {self.col})")
+
+        # Get occupied cells from the message if provided
+        occupied_cells = getattr(message, 'occupied_cells', {})
+        traffic_light_states = message.traffic_light_states
+        crossing_states = message.crossing_states
+
+        # Attempt to park if near a parking spot and randomly decide to try parking
+        if not getattr(self, 'exiting_delay', False) and self._should_attempt_parking():
+            parking_position = (self.row, self.col)
+            if parking_position in VehicleAgent._parking_positions_to_agent_ids:
+                parking_agent_id = VehicleAgent._parking_positions_to_agent_ids[parking_position]
+                await self.send_message(
+                    ParkingRequestCommand(self.id.__str__(), 0), AgentId(parking_agent_id, "default")
+                )
+                # Add this position to parking delay cells
+                VehicleAgent._parking_delay_cells[parking_position] = VehicleAgent.PARKING_DELAY_STEPS
+                print(f"{self.id}: Requesting parking at {parking_position}")
+
+        # Check if we can move (not blocked by other vehicles)
+        can_move = True
+        if (self.row, self.col) in occupied_cells:
+            # If other vehicles are here, wait
+            if occupied_cells[(self.row, self.col)] > 1:
+                can_move = False
+                self.wait_time += 1
+
+        # Check traffic lights
         if can_move:
-            next_row, next_col = self._get_next_position()
-            self.row, self.col = next_row, next_col
+            # Get all traffic light positions in the grid
+            traffic_light_positions = self._get_traffic_light_positions()
+            # Check if we're at a traffic light position
+            if (self.row, self.col) in traffic_light_positions:
+                # Get the traffic light ID
+                light_id = f"traffic_light_{traffic_light_positions.index((self.row, self.col)) + 1}"
+                # Check if we're allowed to move (green light)
+                if light_id in traffic_light_states and traffic_light_states[light_id] != "green":
+                    can_move = False
+                    self.wait_time += 1
 
-            # Check if new position is an exit point
-            if self._is_exit_point(self.row, self.col):
-                print(f"{self.id}: exiting=True, position=({self.row},{self.col}), direction={self.direction}")
-                return
+        # Check pedestrian crossings
+        if can_move:
+            # Get all pedestrian crossing positions
+            crossing_positions = self._get_pedestrian_crossing_positions()
+            # Check if we're at a pedestrian crossing
+            if (self.row, self.col) in crossing_positions:
+                # Get the crossing ID
+                crossing_id = f"crossing_{crossing_positions.index((self.row, self.col)) + 1}"
+                # Check if we're allowed to move (inactive crossing)
+                if crossing_id in crossing_states and crossing_states[crossing_id]:
+                    can_move = False
+                    self.wait_time += 1
+
+        # Move if possible
+        if can_move and not getattr(self, 'exiting_delay', False) and self._can_move_forward(traffic_light_states,
+                                                                                             crossing_states):
+            # Remove current position from registry before potentially moving
+            if (self.row, self.col) in VehicleAgent._all_vehicle_positions:
+                if self.id in VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                    VehicleAgent._all_vehicle_positions[(self.row, self.col)].remove(self.id)
+                    # Clean up empty lists
+                    if not VehicleAgent._all_vehicle_positions[(self.row, self.col)]:
+                        del VehicleAgent._all_vehicle_positions[(self.row, self.col)]
+
+            # Get next position
+            old_row, old_col = self.row, self.col
+            new_row, new_col = self._get_next_position()
+            self.row, self.col = new_row, new_col
+
+            # Register new position
+            if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
+                VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
+            VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
+
+            # Check if we've reached an exit point
+            exiting = self._is_exit_point(self.row, self.col)
         else:
-            self.wait_time += 1
-            logging.debug(
-                f"VehicleAgent-{self.vehicle_id} waiting at ({self.row}, {self.col}), wait_time={self.wait_time}")
+            # Not moving this step
+            exiting = False
 
-        # Register new position in the class tracking variable
-        if (self.row, self.col) not in VehicleAgent._all_vehicle_positions:
-            VehicleAgent._all_vehicle_positions[(self.row, self.col)] = []
-        VehicleAgent._all_vehicle_positions[(self.row, self.col)].append(self.id)
-
-        print(f"{self.id}: position=({self.row},{self.col}), direction={self.direction}, wait_time={self.wait_time}")
+        # Print status
+        print(
+            f"{self.id}: position=({self.row},{self.col}), wait_time={self.wait_time}, direction={self.direction}, is_parked={self.is_parked}, exiting_delay={getattr(self, 'exiting_delay', False)}, exiting={exiting}")

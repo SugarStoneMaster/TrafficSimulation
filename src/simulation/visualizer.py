@@ -18,13 +18,13 @@ YELLOW = (255, 255, 0)
 PURPLE = (160, 32, 240)
 
 
-
 class PyGameVisualizer:
     def __init__(self, grid: RoadGrid, with_parking: bool = False):
         self.grid = grid
         self.width = grid.cols * CELL_SIZE
         self.height = grid.rows * CELL_SIZE
         self.with_parking = with_parking  # Track if parking is enabled
+        self.frame_counter = 0
 
         # Initialize PyGame
         pygame.init()
@@ -167,37 +167,66 @@ class PyGameVisualizer:
     def draw_vehicles(self, vehicles):
         # Group vehicles by position
         vehicles_by_position = {}
-        for vid, row, col, direction in vehicles:
+        for data in vehicles:
+            vid, row, col, direction, is_parked, in_parking_delay, exit_delay = data if len(data) >= 7 else (
+                *data, False, False)
             pos = (row, col)
             if pos not in vehicles_by_position:
                 vehicles_by_position[pos] = []
-            vehicles_by_position[pos].append((vid, direction))
+            vehicles_by_position[pos].append((vid, direction, is_parked, in_parking_delay, exit_delay))
+
+        flash_state = (self.frame_counter // 1) % 2 == 0
 
         # Draw vehicles with offsets when multiple are in same cell
         for (row, col), vehicles_here in vehicles_by_position.items():
             cell = self.grid.grid[row][col]
 
             # For each vehicle at this position
-            for idx, (vid, direction) in enumerate(vehicles_here):
-                vehicle_num = vid[-1]  # Extract number from "vehicle_X"
+            for idx, (vid, direction, is_parked, in_parking_delay, exit_delay) in enumerate(vehicles_here):
+                vehicle_num = vid.split('_')[-1]  # Extract number from "vehicle_X"
 
                 center_x = col * CELL_SIZE + CELL_SIZE // 2
                 center_y = row * CELL_SIZE + CELL_SIZE // 2
 
                 # Apply offset when multiple vehicles in same cell
+                offset_x, offset_y = 0, 0
                 if len(vehicles_here) > 1 and cell.lanes >= 2:
                     if direction in ["northbound", "southbound"]:
                         # Horizontal offset for vertical roads
                         if idx == 0:
-                            center_x -= CELL_SIZE // 4
+                            offset_x = -CELL_SIZE // 4
                         else:
-                            center_x += CELL_SIZE // 4
+                            offset_x = CELL_SIZE // 4
                     else:
                         # Vertical offset for horizontal roads
                         if idx == 0:
-                            center_y -= CELL_SIZE // 4
+                            offset_y = -CELL_SIZE // 4
                         else:
-                            center_y += CELL_SIZE // 4
+                            offset_y = CELL_SIZE // 4
+
+                # Adjust size and position if parked
+                width, height = CELL_SIZE // 5, CELL_SIZE // 3
+                if is_parked:
+                    width, height = CELL_SIZE // 6, CELL_SIZE // 4  # Smaller size
+                    if direction in ["northbound"]:
+                        # Northbound - move to the left side
+                        offset_x = -CELL_SIZE // 3
+                        offset_y = 0
+                    elif direction in ["southbound"]:
+                        # Southbound - move to the right side
+                        offset_x = CELL_SIZE // 3
+                        offset_y = 0
+                    elif direction in ["eastbound"]:
+                        # Eastbound - move to the top side
+                        offset_x = 0
+                        offset_y = -CELL_SIZE // 3
+                    elif direction in ["westbound"]:
+                        # Westbound - move to the bottom side
+                        offset_x = 0
+                        offset_y = CELL_SIZE // 3
+
+                center_x += offset_x
+                center_y += offset_y
 
                 # Set rectangle size based on direction
                 if direction in ["northbound", "southbound"]:
@@ -211,9 +240,18 @@ class PyGameVisualizer:
                 rect_x = center_x - width // 2
                 rect_y = center_y - height // 2
 
+                # Determine vehicle color
+                if exit_delay or in_parking_delay:
+                    # Solid red for both entering and exiting parking
+                    vehicle_color = RED
+                elif is_parked:
+                    vehicle_color = GREEN  # Keep parked vehicles green
+                else:
+                    vehicle_color = PURPLE  # Regular vehicles remain purple
+
                 # Draw vehicle as rectangle
                 vehicle_rect = pygame.Rect(rect_x, rect_y, width, height)
-                pygame.draw.rect(self.screen, PURPLE, vehicle_rect)
+                pygame.draw.rect(self.screen, vehicle_color, vehicle_rect)
 
                 # Draw vehicle ID
                 text = self.font.render(f"V{vehicle_num}", True, WHITE)
@@ -247,7 +285,6 @@ class PyGameVisualizer:
                 CELL_SIZE // 4
             )
 
-
     def draw_crossings(self, crossing_states):
         """
         Draw pedestrian crossings with independent states.
@@ -277,6 +314,7 @@ class PyGameVisualizer:
             pygame.draw.rect(self.screen, crossing_color, rect)
 
     def update(self, vehicles, traffic_light_states, crossing_states):
+        self.frame_counter += 1
         self.draw_grid()
         self.draw_traffic_lights(traffic_light_states)
         self.draw_crossings(crossing_states)

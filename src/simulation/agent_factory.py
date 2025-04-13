@@ -28,8 +28,8 @@ async def register_traffic_lights(runtime: SingleThreadedAgentRuntime, traffic_l
 
 
 async def register_pedestrian_crossings(runtime: SingleThreadedAgentRuntime, grid: RoadGrid,
-                                        crossing_positions: List[Tuple[int, int]],
-                                        timing: Tuple[int, int]) -> List[str]:
+                                       crossing_positions: List[Tuple[int, int]],
+                                       timing: Tuple[int, int]) -> List[str]:
     """Register pedestrian crossing agents."""
     crossing_agents = []
     for i, pos in enumerate(crossing_positions):
@@ -40,8 +40,8 @@ async def register_pedestrian_crossings(runtime: SingleThreadedAgentRuntime, gri
         await PedestrianCrossingAgent.register(
             runtime,
             agent_id,
-            lambda i_val=i, lanes_val=lanes, active_duration=duration:
-            PedestrianCrossingAgent(i_val + 1, lanes=lanes_val, active_duration=active_duration)
+            lambda i_val=i, pos_val=pos, lanes_val=lanes, active_duration=duration:
+            PedestrianCrossingAgent(i_val + 1, position=pos_val, lanes=lanes_val, active_duration=active_duration)
         )
         crossing_agents.append(agent_id)
     return crossing_agents
@@ -85,5 +85,6 @@ async def register_parking_agents(runtime: SingleThreadedAgentRuntime, grid: Roa
                 )
                 parking_agents.append(agent_id)
                 parking_id += 1
+                VehicleAgent._parking_positions_to_agent_ids[(r, c)] = agent_id
 
     return parking_agents
